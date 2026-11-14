@@ -38,6 +38,14 @@ export const STATUS_META: Record<EventStatus, { label: string; chip: string }> =
 
 export const ACTION_NAMES: Record<string, string> = {
   normal: '正常',
+  fight: '肢體攻擊',
+  punch: '揮拳/掌摑',
+  kick: '踢擊',
+  push: '推撞',
+  strike_object: '持物毆打',
+  knife: '持刀',
+  gun: '持槍',
+  weapon: '持械攻擊',
   suspicious: '可疑',
   dangerous: '危險/暴力',
 }

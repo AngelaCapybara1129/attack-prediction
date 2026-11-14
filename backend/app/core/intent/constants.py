@@ -68,13 +68,43 @@ LEVEL_BGR: Dict[str, Tuple[int, int, int]] = {
     "L4": (0, 0, 255),      # 紅
 }
 
-# 行為類型（ST-GCN 動作分類頭）
-ACTION_CLASSES: List[str] = ["normal", "suspicious", "dangerous"]
+# 攻擊類型（ST-GCN 動作分類頭）
+# 實際類別清單由訓練資料決定並存進 checkpoint（config.action_classes），推論時以 checkpoint 為準；
+# 這裡是沒有 checkpoint 時的預設值（粗分類：正常 / 肢體攻擊 / 持械攻擊）。
+ACTION_CLASSES: List[str] = ["normal", "fight", "weapon"]
+
+# 攻擊類型分類體系（STGCN/scripts/preprocess.py --taxonomy）
+#   coarse：normal / fight / weapon（RWF-2000、Hockey、RLVS、SCVD 等只有影片層級標籤的資料集）
+#   fine  ：細分動作（NTU RGB+D 120 雙人互動類別等有動作層級標籤的資料集）
+ATTACK_TAXONOMY: Dict[str, Dict[str, str]] = {
+    "coarse": {
+        "normal": "normal", "fight": "fight", "punch": "fight", "kick": "fight", "push": "fight",
+        "strike_object": "weapon", "knife": "weapon", "gun": "weapon", "weapon": "weapon",
+    },
+    "fine": {
+        "normal": "normal", "fight": "fight", "punch": "punch", "kick": "kick", "push": "push",
+        "strike_object": "strike_object", "knife": "knife", "gun": "gun", "weapon": "weapon",
+    },
+}
+# 類別輸出順序（只保留資料中出現的類別）
+ATTACK_ORDER: List[str] = ["normal", "fight", "punch", "kick", "push", "strike_object", "knife", "gun", "weapon"]
+
 ACTION_NAMES: Dict[str, str] = {
     "normal": "正常",
+    "fight": "肢體攻擊",
+    "punch": "揮拳/掌摑",
+    "kick": "踢擊",
+    "push": "推撞",
+    "strike_object": "持物毆打",
+    "knife": "持刀",
+    "gun": "持槍",
+    "weapon": "持械攻擊",
+    # 舊版三分類
     "suspicious": "可疑",
     "dangerous": "危險/暴力",
 }
+# 屬於攻擊的類別（影片層級判定、告警用）
+NON_ATTACK_CLASSES = {"normal", "suspicious"}
 
 
 def score_to_level(score: float) -> str:

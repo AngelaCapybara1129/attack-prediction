@@ -20,7 +20,7 @@ import torch.nn.functional as F  # noqa: E402
 
 from app.core.intent.ahp import weighted_sum  # noqa: E402
 from app.core.intent.constants import (  # noqa: E402
-    ACTION_CLASSES, INDEX_KEYS, INDEX_NAMES, LEVELS, RISK_SCALE, score_to_level,
+    ACTION_CLASSES, ACTION_NAMES, INDEX_KEYS, INDEX_NAMES, LEVELS, RISK_SCALE, score_to_level,
 )
 from app.core.intent.nets import STGCN, build_model  # noqa: E402
 
@@ -29,19 +29,23 @@ def infer_action_only(model_path, sample_path, device):
     data = np.load(sample_path).astype(np.float32)
     if data.ndim != 4:
         raise ValueError(f"Input sample shape must be (C, T, V, M), got {data.shape}")
-    model = STGCN(num_class=len(ACTION_CLASSES)).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    ckpt = torch.load(model_path, map_location=device, weights_only=True)
+    state = ckpt.get("model_state", ckpt) if isinstance(ckpt, dict) else ckpt
+    classes = list(ckpt.get("action_classes", ACTION_CLASSES)) if isinstance(ckpt, dict) else ACTION_CLASSES
+    model = STGCN(num_class=len(classes)).to(device)
+    model.load_state_dict(state)
     model.eval()
     with torch.no_grad():
         probs = F.softmax(model(torch.tensor(data).unsqueeze(0).to(device)), dim=1)[0].cpu().numpy()
     idx = int(np.argmax(probs))
-    print(f"Predicted class: {idx} ({ACTION_CLASSES[idx]})  confidence={probs[idx]:.4f}")
+    print(f"Predicted class: {idx} ({classes[idx]} {ACTION_NAMES.get(classes[idx], '')})  confidence={probs[idx]:.4f}")
     for i, p in enumerate(probs):
-        print(f"  {i} ({ACTION_CLASSES[i]}): {p:.4f}")
+        print(f"  {i} ({classes[i]}): {p:.4f}")
 
 
 def infer_intent(model_path, sample_path, device):
     ckpt = torch.load(model_path, map_location=device, weights_only=True)
+    classes = list(ckpt.get("config", {}).get("action_classes", ACTION_CLASSES))
     model = build_model(ckpt.get("config", {})).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
@@ -55,7 +59,11 @@ def infer_intent(model_path, sample_path, device):
     lv = F.softmax(out["level_logits"], 1)[0].cpu().numpy()
     nx = out["next_x"][0].cpu().numpy()
     risk = float(out["risk"][0])
-    print(f"行為類型：{ACTION_CLASSES[int(a.argmax())]}（{a.max():.2%}）  真值={ACTION_CLASSES[int(truth['action'])] if 'action' in truth else '-'}")
+    ta = int(truth["action"]) if "action" in truth else -1
+    pa = classes[int(a.argmax())]
+    print(f"攻擊類型：{pa} {ACTION_NAMES.get(pa, '')}（{a.max():.2%}）  真值={classes[ta] if ta >= 0 else '-'}")
+    for c, pc in zip(classes, a):
+        print(f"  {c:<14} {pc:.2%}")
     print(f"風險分數（模型）：{risk:.2f} → {score_to_level(risk)}   預測等級：{LEVELS[int(lv.argmax())]}（{lv.max():.2%}）"
           f"  真值={LEVELS[int(truth['level'])] if 'level' in truth else '-'}")
     print(f"AHP(下一秒 X) = {RISK_SCALE * weighted_sum(nx):.2f}")

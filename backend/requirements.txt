@@ -16,7 +16,7 @@ python-jose[cryptography]==3.3.0
 argon2-cffi==23.1.0
 
 # --- Computer Vision & AI ---
-ultralytics==8.3.0
+ultralytics==8.4.212   # 8.4 以上才支援 YOLO26（8.3.0 會把 yolo26 輸出解碼錯誤）
 opencv-python-headless==4.9.0.80            # Linux 伺服器用 headless，Windows 你可以用一般的 opencv-python
 numpy<2.0.0,>=1.23                           # 明確版本區間，避免裝到 2.x
 
@@ -43,3 +43,4 @@ mediapipe==0.10.33                           # 你已經成功安裝了
 
 # --- 測試 ---
 pytest>=8.0
+lap>=0.5.12        # ByteTrack 依賴；Windows 被應用程式控制封鎖時自動改用 app/core/cv/lap_compat.py

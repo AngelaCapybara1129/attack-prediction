@@ -115,6 +115,11 @@ async def get_cameras():
     for j, src in enumerate([s.strip() for s in os.getenv("EXTRA_SOURCES", "").split(",") if s.strip()]):
         cameras.append({"id": f"extra{j}", "name": f"Stream {j}", "source": src, "streamUrl": None})
 
+    # 模擬鏡頭（測試用）：SIM_CAMERAS="sim://demo,sim://fight"；設為空字串可關閉
+    for src in [s.strip() for s in os.getenv("SIM_CAMERAS", "sim://demo").split(",") if s.strip()]:
+        scenario = src.split("://", 1)[-1]
+        cameras.append({"id": f"sim-{scenario}", "name": f"模擬鏡頭（{scenario}）", "source": src, "streamUrl": None})
+
     return {
         "count": len(cameras),
         "cameras": cameras,

@@ -1,4 +1,4 @@
-"""影片資料集（RWF-2000 / UCF-Crime / 自錄影片）→ 骨架序列 session。
+"""影片資料集（RWF-2000 / Hockey / RLVS / SCVD / NTU RGB+D 120 / 自錄影片）→ 骨架序列 session。
 
 對每支影片執行 YOLO26 + ByteTrack + MediaPipe Pose（+ 武器偵測），
 輸出格式與後端 DataRecorder 相同（frames.jsonl + meta.json），之後統一交給 preprocess.py 建立樣本。
@@ -7,9 +7,13 @@
     data/raw/rwf2000/train/Fight/*.avi
     data/raw/rwf2000/train/NonFight/*.avi
     data/raw/rwf2000/val/Fight/*.avi
+標籤由路徑推得（見 config.resolve_raw_label）：資料夾 Fight/NonFight/Violence/Weaponized…、
+Hockey 檔名 fi*/no*、NTU 檔名動作代碼 A050 揮拳 / A051 踢 / A052 推 / A107 持刀 / A110 持槍…
 用法：
-    python scripts/extract_skeletons.py --input data/raw/rwf2000
-    python scripts/extract_skeletons.py --input data/raw/clips --label dangerous --max-videos 50
+    python scripts/extract_skeletons.py --input data/raw/rwf2000 --dataset rwf2000
+    python scripts/extract_skeletons.py --input data/raw/clips --label punch --max-videos 50
+    # 平行處理（開 3 個終端機各跑一份）
+    python scripts/extract_skeletons.py --input data/raw/rwf2000 --shard 0/3
 """
 import argparse
 import json
@@ -28,21 +32,19 @@ import config  # noqa: E402
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+from app.core.cv.lap_compat import install as install_lap_compat  # noqa: E402
 from app.core.intent.skeleton import crop_landmarks_to_frame, expand_box  # noqa: E402
 from app.core.paths import WEIGHTS_DIR  # noqa: E402
 from app.core.utils.pose_utils import extract_mediapipe_pose_full, pose_model_exists  # noqa: E402
 
 VIDEO_EXTS = {".avi", ".mp4", ".mkv", ".mov"}
 
+install_lap_compat()   # ByteTrack 的 lap 原生套件被封鎖時改用 scipy
+
 
 def infer_label_and_split(path: Path, forced_label=None):
     parts = [p.lower() for p in path.parts]
-    label = forced_label
-    if label is None:
-        for p in reversed(parts[:-1]):
-            if p in config.LABEL_ALIASES:
-                label = config.LABEL_ALIASES[p]
-                break
+    label, _ = config.resolve_raw_label(path, forced_label)
     split = None
     for p in parts:
         if p in ("train", "training"):
@@ -58,7 +60,7 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^0-9A-Za-z_\-]+", "_", s)[:120]
 
 
-def process_video(video: Path, out_dir: Path, label, split, args, weapon_detector) -> int:
+def process_video(video: Path, out_dir: Path, label, split, args, weapon_detector, dataset=None) -> int:
     from ultralytics import YOLO
 
     cap = cv2.VideoCapture(str(video))
@@ -71,7 +73,7 @@ def process_video(video: Path, out_dir: Path, label, split, args, weapon_detecto
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or config.DEFAULT_FRAME_SIZE[0]
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or config.DEFAULT_FRAME_SIZE[1]
 
-    model = YOLO(str(WEIGHTS_DIR / "yolo26n.pt"))   # 每支影片新的 tracker 狀態
+    model = YOLO(str(WEIGHTS_DIR / args.yolo))   # 每支影片新的 tracker 狀態
     tracker_cfg = config.BACKEND_DIR / "app" / "scripts" / "custom_tracker.yaml"
     tracker_arg = str(tracker_cfg) if tracker_cfg.exists() else "bytetrack.yaml"
 
@@ -116,8 +118,9 @@ def process_video(video: Path, out_dir: Path, label, split, args, weapon_detecto
     cap.release()
 
     meta = {
-        "source": "video", "video": str(video), "label": label, "split": split,
-        "fps": fps, "frame_size": [fw, fh], "frames": frame_idx, "records": n_records,
+        "source": "video", "video": str(video), "dataset": dataset, "label": label, "split": split,
+        "fps": fps, "frame_size": [fw, fh], "frames": frame_idx, "records": n_records, "detector": args.yolo,
+        "every": args.every,
         "created_at": time.time(),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -128,7 +131,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=str, default=str(config.RAW_DIR), help="影片根目錄（遞迴搜尋）")
     ap.add_argument("--output", type=str, default=str(config.INTERIM_SESSIONS_DIR))
-    ap.add_argument("--label", type=str, default=None, help="強制指定類別（normal/suspicious/dangerous）")
+    ap.add_argument("--label", type=str, default=None,
+                    help="強制指定原始標籤（normal/fight/punch/kick/push/strike_object/knife/gun/weapon）")
+    ap.add_argument("--dataset", type=str, default=None, help="資料集名稱（寫進 meta.json，例如 rwf2000）")
+    ap.add_argument("--shard", type=str, default="0/1", help="i/n：只處理第 i 份（多個程序平行抽取）")
+    ap.add_argument("--keep-unlabeled", action="store_true", help="無法判斷標籤的影片也抽取（預設略過）")
+    ap.add_argument("--yolo", type=str, default="yolo26l.pt",
+                    help="離線抽取用較準的模型（不在 backend/weights 時會自動下載官方權重）；即時系統仍用 yolo26n")
     ap.add_argument("--conf", type=float, default=0.35)
     ap.add_argument("--every", type=int, default=1, help="每 N 幀處理一次")
     ap.add_argument("--min-pose-h", type=int, default=96)
@@ -145,7 +154,9 @@ def main():
     videos = sorted(p for p in root.rglob("*") if p.suffix.lower() in VIDEO_EXTS)
     if args.max_videos:
         videos = videos[: args.max_videos]
-    print(f"找到 {len(videos)} 支影片於 {root.resolve()}")
+    shard_i, shard_n = (int(x) for x in args.shard.split("/"))
+    videos = videos[shard_i::shard_n]
+    print(f"找到 {len(videos)} 支影片於 {root.resolve()}（shard {shard_i}/{shard_n}）")
 
     weapon_detector = None
     if not args.no_weapons:
@@ -156,19 +167,25 @@ def main():
             print(f"⚠️ 武器偵測器無法使用（X1 將為 0）: {e}")
 
     out_root = Path(args.output)
-    total = 0
+    total, skipped = 0, 0
     for i, video in enumerate(videos, 1):
-        label, split = infer_label_and_split(video.relative_to(root), args.label)
-        name = safe_name(f"{split or 'all'}_{label or 'unlabeled'}_{video.stem}")
+        rel = video.relative_to(root)
+        label, split = infer_label_and_split(rel, args.label)
+        if label is None and not args.keep_unlabeled:
+            skipped += 1
+            continue
+        prefix = f"{args.dataset}_" if args.dataset else ""
+        # 名稱含上層資料夾，避免不同資料夾內同名影片互相覆蓋
+        name = safe_name(f"{prefix}{split or 'all'}_{label or 'unlabeled'}_{'_'.join(rel.parts[-2:-1])}_{video.stem}")
         out_dir = out_root / name
         if (out_dir / "meta.json").exists() and not args.overwrite:
             print(f"[{i}/{len(videos)}] 已存在，略過 {name}")
             continue
         t0 = time.time()
-        n = process_video(video, out_dir, label, split, args, weapon_detector)
+        n = process_video(video, out_dir, label, split, args, weapon_detector, args.dataset)
         total += n
         print(f"[{i}/{len(videos)}] {video.name} → {name}  records={n}  ({time.time() - t0:.1f}s)")
-    print(f"完成，共 {total} 筆人物-幀紀錄 → {out_root}")
+    print(f"完成，共 {total} 筆人物-幀紀錄 → {out_root}（無標籤略過 {skipped} 支）")
 
 
 if __name__ == "__main__":

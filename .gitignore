@@ -122,6 +122,8 @@ backend/app/data/
 **/data/raw/
 **/data/interim/
 **/data/processed/
+**/data/processed_*/
+**/data/synthetic/
 STGCN/logs/
 # 舊規則 datasets/ 會連程式碼一起忽略；STGCN/datasets/ 是程式碼（skeleton_dataset.py）
 datasets/

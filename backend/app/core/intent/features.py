@@ -306,7 +306,7 @@ class FeatureEngine:
                 now_t, l_now, r_now = st.wrist_hist[-1]
                 ref = None
                 for item in st.wrist_hist:
-                    if now_t - item[0] >= 0.15:
+                    if now_t - item[0] >= 0.1:
                         ref = item
                     else:
                         break
@@ -323,7 +323,8 @@ class FeatureEngine:
                 ang = joint_angle(lm[s], lm[e], lm[w])
                 angles.append(ang)
                 ext = _clip01((ang - 120.0) / 40.0)
-                speed_f = _clip01((wrist_speed[k] - 2.5) / 4.5)
+                # 出拳約 5–10 m/s ≈ 10–20 軀幹長/秒；在 10–15 fps 下平均後約 4–8，一般手勢 < 2
+                speed_f = _clip01((wrist_speed[k] - 2.0) / 4.0)
                 raw = max(raw, speed_f * (0.4 + 0.6 * ext))
 
             # 護頭/備戰架勢：雙手肘彎曲且手腕抬到肩膀附近

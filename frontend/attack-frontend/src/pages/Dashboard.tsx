@@ -13,8 +13,7 @@ import { useAlertSocket } from '../hooks/useAlertSocket'
 import { playAlarm } from '../utils/alarm'
 import type { EventItem, EventListResponse, EventStats, SocketMessage } from '../types/intent'
 
-import dashboardBg from '../assets/hlogo_al.png'
-import workspaceOverlay from '../assets/work-space.svg'
+import PageBackground from '../components/PageBackground'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 
@@ -193,19 +192,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="relative min-h-screen lg:h-[100dvh] w-full overflow-x-hidden bg-white text-slate-900">
-      <div className="fixed inset-0 z-0 pointer-events-none">
-        <img
-          src={workspaceOverlay}
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover opacity-25"
-        />
-        <img
-          src={dashboardBg}
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover opacity-18"
-        />
-        <div className="absolute inset-0 bg-white/78" />
-      </div>
+      <PageBackground />
 
       <div className="relative z-10 flex min-h-screen flex-col gap-3 p-3 md:p-4 lg:h-[100dvh] lg:overflow-hidden lg:p-5">
         <header className={`${glassCard} shrink-0 p-3`}>
@@ -278,7 +265,7 @@ const Dashboard: React.FC = () => {
                     ) : (
                       cameraOptions.map((cam) => (
                         <option key={cam} value={cam} className="bg-white text-slate-800">
-                          Cam {cam}
+                          {cameras.find((c) => c.source === cam)?.name ?? `Cam ${cam}`}
                         </option>
                       ))
                     )}

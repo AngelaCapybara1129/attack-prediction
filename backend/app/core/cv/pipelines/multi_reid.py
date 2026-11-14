@@ -20,6 +20,8 @@ import torchreid
 from ultralytics import YOLO
 
 from app.core.cv.pipelines.data_recorder import DataRecorder
+from app.core.cv.simulator import is_sim_source
+from app.core.cv.sources import open_source
 from app.core.intent import registry
 from app.core.intent.constants import LEVEL_BGR
 from app.core.intent.engine import IntentEngine
@@ -341,7 +343,7 @@ def draw_weapons(frame: np.ndarray, weapons: List[WeaponObservation]):
 # ---------------------------------------------------------------------------
 
 def process_camera_frame(
-    model: YOLO,
+    model: Optional[YOLO],
     frame: np.ndarray,
     camera_name: str,
     cam_index: int,
@@ -350,35 +352,49 @@ def process_camera_frame(
     recorder: Optional[DataRecorder] = None,
     frame_idx: int = 0,
     ts: Optional[float] = None,
+    sim: Optional[Tuple[List[PersonObservation], List[WeaponObservation]]] = None,
 ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    """sim 不為 None 時（模擬鏡頭）直接使用劇本給的人物與武器，略過 YOLO / Re-ID / MediaPipe。"""
     tracker_arg = str(TRACKER_PATH) if TRACKER_PATH.exists() else "bytetrack.yaml"
     ts = now_ts() if ts is None else ts
     fh, fw = frame.shape[:2]
-
-    results = model.track(
-        frame,
-        classes=[0],
-        conf=CONF_DEFAULT,
-        imgsz=IMG_SIZE,
-        persist=True,
-        tracker=tracker_arg,
-        verbose=False,
-    )
-    result = results[0]
     vis = frame.copy()
 
     weapons: List[WeaponObservation] = []
-    if weapon_detector is not None:
-        try:
-            weapons = weapon_detector.detect(camera_name, frame)
-        except Exception as e:
-            print(f"[WEAPON] 偵測失敗: {e}")
-
     observations: List[PersonObservation] = []
     notes: Dict[int, str] = {}
     record_items: List[Dict[str, Any]] = []
 
-    if result.boxes is not None and result.boxes.id is not None and len(result.boxes) > 0:
+    if sim is not None:
+        observations, weapons = list(sim[0]), list(sim[1])
+        for obs in observations:
+            notes[obs.person_id] = "sim"
+            if obs.landmarks is not None:
+                draw_pose_px(vis, obs.landmarks)
+            record_items.append({
+                "person_id": obs.person_id, "track_id": obs.track_id, "bbox": list(obs.bbox),
+                "reid_score": 1.0, "det_conf": obs.det_conf, "landmarks": None, "pose_box": None,
+                "visibility": None if obs.visibility is None else obs.visibility.round(3).tolist(),
+                "landmarks_px": None if obs.landmarks is None else np.asarray(obs.landmarks).round(2).tolist(),
+            })
+        result = None
+    else:
+        result = model.track(
+            frame,
+            classes=[0],
+            conf=CONF_DEFAULT,
+            imgsz=IMG_SIZE,
+            persist=True,
+            tracker=tracker_arg,
+            verbose=False,
+        )[0]
+        if weapon_detector is not None:
+            try:
+                weapons = weapon_detector.detect(camera_name, frame)
+            except Exception as e:
+                print(f"[WEAPON] 偵測失敗: {e}")
+
+    if result is not None and result.boxes is not None and result.boxes.id is not None and len(result.boxes) > 0:
         boxes = result.boxes.xyxy.int().cpu().tolist()
         track_ids = result.boxes.id.int().cpu().tolist()
         confs = result.boxes.conf.cpu().tolist()
@@ -505,22 +521,24 @@ def run_detection_multi_reid(
     except Exception as e:
         print(f"⚠️ PoseLandmarker 載入失敗: {e}")
 
+    real_sources = [not is_sim_source(s) for s in sources]
     try:
-        # 每支鏡頭一個 YOLO 實例：ByteTrack 狀態綁在 predictor 上，共用會把不同鏡頭的 track 混在一起
-        models = [YOLO(str(MODEL_PATH)) for _ in sources]
-        print(f"✅ YOLO loaded for multi_reid ({len(models)} trackers)")
+        # 每支真實鏡頭一個 YOLO 實例：ByteTrack 狀態綁在 predictor 上，共用會把不同鏡頭的 track 混在一起
+        models: List[Optional[YOLO]] = [YOLO(str(MODEL_PATH)) if real else None for real in real_sources]
+        print(f"✅ YOLO loaded for multi_reid ({sum(real_sources)} trackers, {len(sources) - sum(real_sources)} simulated)")
     except Exception as e:
         print(f"❌ YOLO 載入失敗: {e}")
         stop_events.pop(task_id, None)
         return
 
     weapon_detector = None
-    try:
-        from app.core.cv.weapons import WeaponDetector
-        weapon_detector = WeaponDetector()
-        print("✅ WeaponDetector ready (X1)")
-    except Exception as e:
-        print(f"⚠️ 武器偵測器載入失敗，X1 將維持 0: {e}")
+    if any(real_sources):
+        try:
+            from app.core.cv.weapons import WeaponDetector
+            weapon_detector = WeaponDetector()
+            print("✅ WeaponDetector ready (X1)")
+        except Exception as e:
+            print(f"⚠️ 武器偵測器載入失敗，X1 將維持 0: {e}")
 
     engine = IntentEngine(task_id=task_id, predictor=get_predictor())
     registry.register(engine)
@@ -537,7 +555,7 @@ def run_detection_multi_reid(
 
     for i, src in enumerate(sources):
         cam_name = f"cam{i}"
-        cap = open_camera(src)
+        cap = open_source(src, cam_index=i)
         if cap is None:
             print(f"❌ 無法開啟來源: {src} ({cam_name})")
             for opened in caps:
@@ -566,17 +584,17 @@ def run_detection_multi_reid(
             ok_all = True
 
             for cap in caps:
-                ret, frame = cap.read()
+                ret, frame, sim = cap.read()
                 if not ret:
                     ok_all = False
                     break
-                frames.append(frame)
+                frames.append((frame, sim))
 
             if not ok_all:
                 print("[multi_reid] 有鏡頭讀取失敗，任務結束")
                 break
 
-            for i, frame in enumerate(frames):
+            for i, (frame, sim) in enumerate(frames):
                 cam_name = camera_names[i]
                 ts = now_ts()
                 vis, alerts = process_camera_frame(
@@ -589,6 +607,7 @@ def run_detection_multi_reid(
                     recorder=recorder,
                     frame_idx=frame_indices[i],
                     ts=ts,
+                    sim=sim,
                 )
 
                 now = now_ts()

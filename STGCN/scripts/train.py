@@ -3,7 +3,9 @@
     python scripts/train.py                      # 雙通道多任務（預設，輸出 checkpoints/intent_model.pt）
     python scripts/train.py --task action        # 只訓練 ST-GCN 行為分類（輸出 checkpoints/best_stgcn.pth）
 
-損失 = CE(行為類型) + CE(L0–L4) + 5·MSE(下一秒 X1–X9) + 5·MSE(風險分數/10)
+損失 = CE(攻擊類型) + CE(L0–L4) + 5·MSE(下一秒 X1–X9) + 5·MSE(風險分數/10)
+攻擊類型類別清單來自 preprocess 產生的 dataset_meta.json（--taxonomy coarse/fine），並存進 checkpoint；
+action = -1（無標籤樣本）不計入攻擊類型損失與指標。
 訓練完成後把 intent_model.pt 留在 STGCN/checkpoints/，後端啟動新任務時會自動載入
 （或呼叫 POST /api/intent/model/reload）。
 """
@@ -26,7 +28,7 @@ import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 from torch.utils.data import DataLoader  # noqa: E402
 
-from app.core.intent.constants import ACTION_CLASSES, INDEX_KEYS, LEVELS, RISK_SCALE  # noqa: E402
+from app.core.intent.constants import ACTION_CLASSES, INDEX_KEYS, LEVELS, RISK_SCALE  # noqa: E402,F401
 from app.core.intent.nets import STGCN, build_model, count_parameters  # noqa: E402
 from datasets.skeleton_dataset import IntentWindowDataset, class_weights  # noqa: E402
 from utils.metrics import classification_metrics, regression_metrics  # noqa: E402
@@ -45,7 +47,14 @@ def to_py(obj):
     return obj
 
 
-def run_epoch(model, loader, device, task, optimizer=None, w_action=None, w_level=None):
+def masked_ce(logits, target, weight=None):
+    """忽略 target = -1（無攻擊類型標籤）的樣本；全部無標籤時回傳 0。"""
+    if not bool((target >= 0).any()):
+        return logits.sum() * 0.0
+    return F.cross_entropy(logits, target, weight=weight, ignore_index=-1)
+
+
+def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=None, w_level=None):
     train = optimizer is not None
     model.train(train)
     totals = {"loss": 0.0, "n": 0}
@@ -57,7 +66,7 @@ def run_epoch(model, loader, device, task, optimizer=None, w_action=None, w_leve
         with torch.set_grad_enabled(train):
             if task == "action":
                 logits = model(skel)
-                loss = F.cross_entropy(logits, y_action, weight=w_action)
+                loss = masked_ce(logits, y_action, w_action)
                 out = {"action_logits": logits}
             else:
                 xseq = batch["xseq"].to(device)
@@ -66,7 +75,7 @@ def run_epoch(model, loader, device, task, optimizer=None, w_action=None, w_leve
                 y_risk = batch["risk"].to(device)
                 out = model(skel, xseq)
                 loss = (
-                    F.cross_entropy(out["action_logits"], y_action, weight=w_action)
+                    masked_ce(out["action_logits"], y_action, w_action)
                     + F.cross_entropy(out["level_logits"], y_level, weight=w_level)
                     + 5.0 * F.mse_loss(out["next_x"], y_next)
                     + 5.0 * F.mse_loss(out["risk"] / RISK_SCALE, y_risk / RISK_SCALE)
@@ -90,8 +99,9 @@ def run_epoch(model, loader, device, task, optimizer=None, w_action=None, w_leve
             ys["risk_pred"].append(out["risk"].detach().cpu().numpy())
 
     metrics = {"loss": totals["loss"] / max(1, totals["n"])}
-    metrics["action"] = classification_metrics(np.concatenate(ys["action"]), np.concatenate(ys["action_pred"]),
-                                                len(ACTION_CLASSES), ACTION_CLASSES)
+    ya, pa = np.concatenate(ys["action"]), np.concatenate(ys["action_pred"])
+    keep = ya >= 0
+    metrics["action"] = classification_metrics(ya[keep], pa[keep], len(classes), classes)
     if task != "action":
         metrics["level"] = classification_metrics(np.concatenate(ys["level"]), np.concatenate(ys["level_pred"]),
                                                   len(LEVELS), LEVELS)
@@ -135,9 +145,11 @@ def main():
         with open(meta_path, "r", encoding="utf-8") as f:
             model_cfg.update(json.load(f).get("config", {}))   # 與資料集一致的 seq_len / window_sec / horizon_sec
 
-    a_counts = train_ds.label_counts("action", len(ACTION_CLASSES))
+    classes = list(model_cfg.get("action_classes") or ACTION_CLASSES)
+    model_cfg["action_classes"] = classes
+    a_counts = train_ds.label_counts("action", len(classes))
     l_counts = train_ds.label_counts("level", len(LEVELS))
-    print("行為類別分布:", dict(zip(ACTION_CLASSES, a_counts.tolist())))
+    print("攻擊類型分布:", dict(zip(classes, a_counts.tolist())))
     print("風險等級分布:", dict(zip(LEVELS, l_counts.tolist())))
     w_action = class_weights(a_counts)
     w_level = class_weights(l_counts)
@@ -145,7 +157,7 @@ def main():
     w_level = None if w_level is None else w_level.to(device)
 
     if args.task == "action":
-        model = STGCN(num_class=len(ACTION_CLASSES)).to(device)
+        model = STGCN(num_class=len(classes)).to(device)
         out_path = args.out or str(config.CHECKPOINT_DIR / "best_stgcn.pth")
     else:
         model = build_model(model_cfg).to(device)
@@ -164,8 +176,8 @@ def main():
         writer.writerow(["epoch", "train_loss", "val_loss", "val_action_top1", "val_action_f1",
                          "val_level_f1", "val_next_x_mae", "val_risk_mae", "lr"])
         for epoch in range(1, args.epochs + 1):
-            tr = run_epoch(model, train_loader, device, args.task, optimizer, w_action, w_level)
-            va = run_epoch(model, val_loader, device, args.task)
+            tr = run_epoch(model, train_loader, device, args.task, classes, optimizer, w_action, w_level)
+            va = run_epoch(model, val_loader, device, args.task, classes)
             scheduler.step()
             score = selection_score(va, args.task)
             lvl_f1 = va.get("level", {}).get("macro_f1", float("nan"))
@@ -181,7 +193,8 @@ def main():
             if score > best:
                 best, best_epoch, stale = score, epoch, 0
                 if args.task == "action":
-                    torch.save(model.state_dict(), out_path)
+                    torch.save({"model_state": model.state_dict(), "action_classes": classes,
+                                "config": to_py(model_cfg)}, out_path)
                 else:
                     torch.save({
                         "model_state": model.state_dict(),

@@ -3,6 +3,10 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+
+from app.core.cv.lap_compat import install as install_lap_compat
+
+install_lap_compat()   # ByteTrack 的 lap 原生套件被封鎖時改用 scipy（需在 ultralytics tracker 載入前）
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 

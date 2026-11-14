@@ -42,6 +42,20 @@ cd frontend/attack-frontend
 pnpm install; pnpm dev        # http://localhost:5173
 ```
 
+### 模擬鏡頭（沒有攝影機也能測試）
+
+鏡頭清單預設會出現「模擬鏡頭（demo）」，選它並按「開始監測」即可。畫面中的人物會依劇本做出攻擊前兆：
+
+| 來源 | 情境 | 預期 |
+|---|---|---|
+| `sim://demo` | 路人 → 尾隨 → 衝刺揮拳 → 持刀逼近 → 群聚（約 82 秒循環） | 依序 L0 → L2 → L3 → L4 → L2 |
+| `sim://calm` / `follow` / `fight` / `weapon` / `group` / `loiter` | 單一情境 | L0 / L2 / L3 / L4 / L2 / L1 |
+
+- 設定 `SIM_CAMERAS=sim://demo,sim://fight` 可同時列出多個模擬鏡頭（多鏡頭模式會一起跑）；設為空字串則關閉。
+- 模擬鏡頭直接產生骨架，**略過 YOLO / Re-ID / MediaPipe**，用來驗證 X1–X9 → L0–L4 → 告警 → RAG → 前端。
+- 測試偵測端請用真實影片：`EXTRA_SOURCES=<影片路徑>`，影片會以實際速度循環播放。
+- `tests/test_simulator.py` 會快速重播每個情境，確認都達到預期等級。
+
 ### Docker（GPU）
 
 ```powershell
@@ -56,23 +70,45 @@ docker compose down
 
 沒有訓練好的模型時，系統以「X1–X9 規則 + AHP」基線運作；訓練完成後放上 checkpoint，系統會自動切換成「規則 + ST-GCN/LSTM 融合」。
 
-### 訓練雙通道模型
+### 訓練雙通道模型（攻擊類型分類 + 意圖預測）
+
+模型同時輸出：攻擊類型、下一秒 X1–X9、風險分數、L0–L4。攻擊類型有兩種分類體系（`preprocess.py --taxonomy`）：
+
+| taxonomy | 類別 | 適用資料集 |
+|---|---|---|
+| `coarse`（預設） | normal 正常 / fight 肢體攻擊 / weapon 持械攻擊 | RWF-2000、Hockey Fights、Real Life Violence Situations、SCVD |
+| `fine` | normal / punch 揮拳 / kick 踢擊 / push 推撞 / strike_object 持物毆打 / knife 持刀 / gun 持槍 | NTU RGB+D 120 雙人互動動作、自錄影片 |
+
+資料放在 `STGCN/data/raw/<資料集>/`，標籤由路徑自動判斷（`STGCN/config.py`）：
+
+| 資料集 | 取得方式 | 放置結構 → 標籤 |
+|---|---|---|
+| RWF-2000 | 向作者簽署使用協議（GitHub: mchengny/RWF2000-Video-Database-for-Violence-Detection） | `rwf2000/train/Fight`、`train/NonFight`、`val/...` → fight / normal（val 再對半分成 val/test） |
+| Hockey Fights | 公開下載 | 檔名 `fi*.avi` / `no*.avi` → fight / normal |
+| Real Life Violence Situations | Kaggle | `Violence/`、`NonViolence/` → fight / normal |
+| SCVD | Kaggle | `Normal/`、`Violence/`、`Weaponized/` → normal / fight / weapon |
+| NTU RGB+D 120 | 向 ROSE Lab 申請 | 檔名動作代碼 A050 揮拳、A051 踢、A052/A108 推撞、A106 持物毆打、A107 持刀、A110 持槍，其餘雙人互動 → normal |
+| 自錄影片 | — | 資料夾名稱直接用類別：`punch/`、`kick/`、`knife/`、`normal/`… |
 
 ```powershell
 cd STGCN
-pip install -r requirements.txt
-# 1) 影片 → 骨架 session（資料夾名稱 Fight/NonFight、train/val 會自動成為標籤與切分）
-python scripts/extract_skeletons.py --input data/raw/rwf2000
-# 2) 建立樣本（也會一併讀取後端錄下的 backend/data/sessions）
-#    RWF-2000 每段只有 5 秒，需縮短視窗：
-python scripts/preprocess.py --clean --window-sec 3 --horizon-sec 1 --seq-len 90
-# 3) 訓練、評估、單筆推論
-python scripts/train.py
+$env:PYTHONIOENCODING="utf-8"
+# 1) 影片 → 骨架 session（YOLO26 + ByteTrack + MediaPipe + 武器偵測，GPU）
+#    影片多時可開多個終端機平行：--shard 0/3、--shard 1/3、--shard 2/3
+python scripts/extract_skeletons.py --input data/raw/rwf2000 --dataset rwf2000
+# 2) 建立樣本：RWF-2000 每段只有 5 秒，需縮短視窗；Hockey 只有約 1.5 秒，用 --window-sec 1 --horizon-sec 0 --seq-len 30
+python scripts/preprocess.py --clean --taxonomy coarse --window-sec 3 --horizon-sec 1 --seq-len 90
+# 3) 訓練、評估（視窗層級 + 影片層級 Top-1 / Macro-F1 / Recall、MAE / RMSE）、單筆推論
+python scripts/train.py --epochs 80
 python scripts/evaluate.py --split test
 python scripts/infer.py --sample data/processed/test/samples/<id>.npz
 ```
 
-產生的 `STGCN/checkpoints/intent_model.pt` 會在下一次開始監測時自動載入（或呼叫 `POST /api/intent/model/reload`）。
+- 攻擊影片中的旁觀者：`preprocess.py` 預設會排除「身邊 1.2 個身高內沒有其他人、也沒有攻擊相關指數」的視窗（`--attack-filter none` 可關閉）。
+- 沒有標籤的後端錄影（`backend/data/sessions`）只用來訓練指數／風險預測，不計入攻擊類型損失。
+- **沒有資料集時的流程測試**：`python scripts/make_synthetic_sessions.py --clean` 產生模擬骨架，再以 `--sessions data/synthetic/sessions --output data/processed_synthetic` 前處理並訓練。結果只代表程式能正確執行，不能當作模型成效。
+
+產生的 `STGCN/checkpoints/intent_model.pt` 會在下一次開始監測時自動載入（或呼叫 `POST /api/intent/model/reload`），攻擊類型會顯示在告警與人物面板上。
 
 ### 主要 API
 

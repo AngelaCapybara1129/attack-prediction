@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { History, Search, X } from 'lucide-react'
 import { apiFetch } from '../api/client'
 import AlertCard from '../components/AlertCard'
 import EventDetailDrawer from '../components/EventDetailDrawer'
+import PageBackground from '../components/PageBackground'
+import Pagination from '../components/Pagination'
 import { INDEX_META, LEVELS, STATUS_META } from '../constants/risk'
 import type { EventItem, EventListResponse, EventStatus, RiskLevel, TextSearchResponse } from '../types/intent'
 
-const PAGE_SIZE = 30
+const PAGE_SIZE = 10 // 每頁最多 10 筆事件
+const SEARCH_LIMIT = 100 // 後端文字檢索上限；結果在前端分頁
 const glassCard =
   'rounded-[16px] border border-white/50 bg-white/55 backdrop-blur-2xl shadow-[0_10px_30px_rgba(15,23,42,0.08)] ring-1 ring-white/60'
 
@@ -18,6 +21,9 @@ export default function EventsPage() {
   const [minLevel, setMinLevel] = useState<RiskLevel>('L1')
   const [status, setStatus] = useState<EventStatus | ''>('')
   const [page, setPage] = useState(0)
+  const pageSize = PAGE_SIZE
+  const [searchPage, setSearchPage] = useState(0)
+  const topRef = useRef<HTMLDivElement>(null)
   const [list, setList] = useState<EventListResponse>({ total: 0, items: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -34,8 +40,8 @@ export default function EventsPage() {
     try {
       const params = new URLSearchParams({
         min_level: minLevel,
-        limit: String(PAGE_SIZE),
-        offset: String(page * PAGE_SIZE),
+        limit: String(pageSize),
+        offset: String(page * pageSize),
       })
       if (status) params.set('status', status)
       setList(await apiFetch<EventListResponse>(`/api/events?${params.toString()}`))
@@ -44,11 +50,29 @@ export default function EventsPage() {
     } finally {
       setLoading(false)
     }
-  }, [minLevel, status, page])
+  }, [minLevel, status, page, pageSize])
 
   useEffect(() => {
     void loadList()
   }, [loadList])
+
+  // 資料變少（例如事件被刪除、篩選改變）時，避免停在不存在的頁
+  useEffect(() => {
+    const last = Math.max(0, Math.ceil(list.total / pageSize) - 1)
+    if (!loading && page > last) setPage(last)
+  }, [list.total, pageSize, page, loading])
+
+  const scrollTop = () => topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+  const changePage = (p: number) => {
+    setPage(p)
+    scrollTop()
+  }
+
+  const changeSearchPage = (p: number) => {
+    setSearchPage(p)
+    scrollTop()
+  }
 
   const runSearch = async (q: string) => {
     if (!q.trim()) {
@@ -56,12 +80,13 @@ export default function EventsPage() {
       return
     }
     setSearching(true)
+    setSearchPage(0)
     setError('')
     try {
       setSearch(
         await apiFetch<TextSearchResponse>('/api/search/text', {
           method: 'POST',
-          body: JSON.stringify({ query: q.trim(), limit: 50 }),
+          body: JSON.stringify({ query: q.trim(), limit: SEARCH_LIMIT }),
         }),
       )
     } catch (err) {
@@ -83,11 +108,13 @@ export default function EventsPage() {
     )
   }
 
-  const totalPages = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
   const parsed = search?.parsed
+  const searchItems = search ? search.items.slice(searchPage * pageSize, (searchPage + 1) * pageSize) : []
 
   return (
-    <div className="mx-auto max-w-6xl p-3 md:p-5">
+    <div className="relative min-h-screen w-full overflow-x-hidden bg-white text-slate-900">
+      <PageBackground />
+      <div ref={topRef} className="relative z-10 mx-auto max-w-6xl scroll-mt-16 p-3 md:p-5">
       <header className={`${glassCard} mb-4 p-4`}>
         <div className="mb-3 flex items-center gap-2">
           <History className="h-5 w-5 text-emerald-600" />
@@ -167,13 +194,16 @@ export default function EventsPage() {
                 {parsed.until ? ` 至 ${new Date(parsed.until).toLocaleDateString('zh-TW')}` : ''}
               </span>
             )}
-            <span className="ml-auto">{search.items.length} 筆</span>
+            <span className="ml-auto">
+              {search.items.length} 筆{search.items.length >= SEARCH_LIMIT ? `（僅顯示最相關的 ${SEARCH_LIMIT} 筆）` : ''}
+            </span>
           </div>
           {search.items.length === 0 ? (
             <p className="py-8 text-center text-xs text-slate-500">沒有符合的事件</p>
           ) : (
+            <>
             <div className="grid gap-2 md:grid-cols-2">
-              {search.items.map((it) => (
+              {searchItems.map((it) => (
                 <AlertCard
                   key={it.event_id}
                   event={it.event}
@@ -186,6 +216,15 @@ export default function EventsPage() {
                 />
               ))}
             </div>
+            <div className="mt-3">
+              <Pagination
+                page={searchPage}
+                pageSize={pageSize}
+                total={search.items.length}
+                onPageChange={changeSearchPage}
+              />
+            </div>
+            </>
           )}
         </section>
       ) : (
@@ -222,7 +261,6 @@ export default function EventsPage() {
                 ))}
               </select>
             </label>
-            <span className="ml-auto text-slate-500">共 {list.total} 筆</span>
           </div>
           {loading ? (
             <p className="py-8 text-center text-xs text-slate-500">載入中…</p>
@@ -235,29 +273,19 @@ export default function EventsPage() {
               ))}
             </div>
           )}
-          <div className="mt-3 flex items-center justify-center gap-2 text-xs">
-            <button
-              disabled={page === 0}
-              onClick={() => setPage((p) => p - 1)}
-              className="rounded bg-slate-200 px-2 py-1 disabled:opacity-40"
-            >
-              上一頁
-            </button>
-            <span className="tabular-nums text-slate-600">
-              {page + 1} / {totalPages}
-            </span>
-            <button
-              disabled={page + 1 >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded bg-slate-200 px-2 py-1 disabled:opacity-40"
-            >
-              下一頁
-            </button>
+          <div className="mt-3">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={list.total}
+              onPageChange={changePage}
+            />
           </div>
         </section>
       )}
 
       <EventDetailDrawer eventId={openId} onClose={() => setOpenId(null)} onUpdated={onUpdated} />
+      </div>
     </div>
   )
 }
