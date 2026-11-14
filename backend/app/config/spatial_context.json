@@ -1,0 +1,20 @@
+{
+  "_說明": "X9 空間脈絡 = 區域權重 × 時段權重。zones 以畫面正規化座標 (0~1) 的多邊形定義高風險區，人物腳底點落在多邊形內時採用該區權重，否則採用 camera 預設權重。",
+  "default_region_weight": 0.4,
+  "cameras": {
+    "cam0": {
+      "region_weight": 0.5,
+      "zones": [
+        { "name": "出入口", "weight": 0.9, "polygon": [[0.0, 0.6], [0.35, 0.6], [0.35, 1.0], [0.0, 1.0]] }
+      ]
+    },
+    "cam1": { "region_weight": 0.5, "zones": [] }
+  },
+  "time_weights": [
+    { "start": 0, "end": 5, "weight": 1.0, "label": "凌晨" },
+    { "start": 5, "end": 7, "weight": 0.6, "label": "清晨" },
+    { "start": 7, "end": 18, "weight": 0.3, "label": "日間" },
+    { "start": 18, "end": 22, "weight": 0.6, "label": "夜間" },
+    { "start": 22, "end": 24, "weight": 1.0, "label": "深夜" }
+  ]
+}

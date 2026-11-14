@@ -1,0 +1,170 @@
+# =============================================================
+# attack-prediction
+# 規則：程式碼、設定範本、小型預訓練權重 → 進版控
+#       虛擬環境、密碼、資料集、執行期資料（含人物影像）、訓練產物 → 不進版控
+# 注意：中間含 "/" 的規則只相對於本檔所在目錄；要匹配任何層級請用 **/
+# =============================================================
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dylib
+.python-version
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+build/
+
+# 測試 / 快取
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# =========================
+# 虛擬環境（Python venv）
+# 路徑一律用 "/"；gitignore 中的 "\" 是跳脫字元，不是 Windows 路徑分隔
+# =========================
+# 本專案使用的環境
+backend/.venv/
+backend/.venv.broken/
+STGCN/.venv/
+STGCN/venv/
+backend/venv/
+# 任何層級、任何命名的 venv（.venv、.venv.broken、.venv-gpu…）
+.venv*/
+venv/
+env/
+ENV/
+.conda/
+# 只要資料夾內有 pyvenv.cfg 就是虛擬環境，連同設定檔一起忽略
+pyvenv.cfg
+
+# =========================
+# 環境變數 / 機密（只保留範本）
+# =========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets.json
+credentials.json
+
+# =========================
+# Node / 前端
+# =========================
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# =========================
+# 資料庫（含使用者帳號雜湊，勿上傳）
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# =========================
+# 模型權重
+# =========================
+*.pt
+*.pth
+*.onnx
+*.engine
+*.ckpt
+*.tflite
+*.trt
+*.task
+# 小型預訓練權重保留在版控，clone 後即可執行（共約 17 MB）
+!backend/weights/
+!backend/weights/*.pt
+!backend/weights/*.task
+# 根目錄與 app/ 下的重複權重副本（程式只讀 backend/weights/）
+backend/*.pt
+backend/*.task
+backend/app/weights/
+
+# 訓練產物
+**/checkpoints/
+runs/
+wandb/
+mlruns/
+
+# =========================
+# 後端執行期資料
+#   sessions/ 骨架錄製、snapshots/ 即時畫面、events/ 告警關鍵畫面（含人物影像）
+#   rag/ 向量庫、videos/ 上傳影片、logs/
+# =========================
+backend/data/
+backend/app/data/
+
+# =========================
+# STGCN 資料集與訓練輸出
+# =========================
+**/data/raw/
+**/data/interim/
+**/data/processed/
+STGCN/logs/
+# 舊規則 datasets/ 會連程式碼一起忽略；STGCN/datasets/ 是程式碼（skeleton_dataset.py）
+datasets/
+!STGCN/datasets/
+
+# 影片與中間產物
+*.mp4
+*.avi
+*.mkv
+*.mov
+clips/
+flat_clips/
+rwf2000/
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+
+# 標註工具
+label_studio_data/
+backend/label-studio-data/
+
+# =========================
+# 日誌 / 暫存
+# =========================
+*.log
+logs/
+tmp/
+temp/
+
+# =========================
+# 作業系統 / 編輯器
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code 本機設定
+.claude/settings.local.json

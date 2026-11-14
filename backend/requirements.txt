@@ -1,0 +1,45 @@
+# --- Web Framework & Server ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# --- Database & Migrations ---
+sqlalchemy==2.0.35
+alembic==1.13.2
+pydantic-settings==2.5.2
+email-validator>=2.0                          # EmailStr（auth schemas）需要
+
+# --- Security & Auth ---
+bcrypt==4.0.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+argon2-cffi==23.1.0
+
+# --- Computer Vision & AI ---
+ultralytics==8.3.0
+opencv-python-headless==4.9.0.80            # Linux 伺服器用 headless，Windows 你可以用一般的 opencv-python
+numpy<2.0.0,>=1.23                           # 明確版本區間，避免裝到 2.x
+
+# --- Torch：不寫在這裡，請先依硬體另外安裝（Dockerfile 也是這樣做） ---
+#   GPU（CUDA 12.6）: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   CPU            : pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# 原本的 torch==2.11.0+cpu 與 torchvision==0.19.1+cpu 版本互不相容，已移除。
+
+# --- PostgreSQL（docker compose --profile postgres 時使用）---
+psycopg2-binary>=2.9
+
+# --- Utilities ---
+python-dotenv==1.0.0
+psutil==5.9.8
+
+# --- 其他可選（如果你有空間、CPU 跑得動） ---
+mediapipe==0.10.33                           # 你已經成功安裝了
+# torchreid（OSNet 跨鏡頭 Re-ID，multi_reid.py 需要）：
+#   pip install git+https://github.com/KaiyangZhou/deep-person-reid.git
+
+# --- RAG 向量資料庫（可選）---
+# 未安裝或未設定 MILVUS_URI 時，自動改用 backend/data/rag/ 的本機向量庫
+# pymilvus>=2.4
+
+# --- 測試 ---
+pytest>=8.0

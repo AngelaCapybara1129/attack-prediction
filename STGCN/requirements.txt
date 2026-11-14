@@ -1,0 +1,11 @@
+numpy<2.0.0,>=1.23
+torch
+torchvision
+pandas
+scikit-learn
+tqdm
+# 影片 → 骨架擷取（scripts/extract_skeletons.py）需要與後端相同的 CV 套件
+opencv-python
+ultralytics
+mediapipe==0.10.33
+python-dotenv

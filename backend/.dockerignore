@@ -1,0 +1,10 @@
+.venv/
+.venv.broken/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+data/
+app/data/
+*.db
+.env

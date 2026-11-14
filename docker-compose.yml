@@ -1,0 +1,79 @@
+# 啟動：docker compose up -d --build
+#   前端  http://localhost:3000
+#   後端  http://localhost:8000/docs
+# 注意：Windows 版 Docker Desktop 無法把 USB 攝影機傳進容器。
+#       容器內請改用 RTSP 串流或影片檔（放在 backend/data/videos/，
+#       並在 backend/.env 設定 EXTRA_SOURCES=/app/data/videos/xxx.mp4，或用 POST /yolo/upload 上傳）。
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      # 訓練好的 STGCN/checkpoints/intent_model.pt 由後端載入
+      - ./STGCN:/STGCN
+      # OSNet / Ultralytics 權重快取，避免每次啟動重新下載
+      - model-cache:/root/.cache
+    env_file:
+      - ./backend/.env
+    environment:
+      STGCN_DIR: /STGCN
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
+      # 啟用 PostgreSQL（docker compose --profile postgres up）時取消註解：
+      # DATABASE_URL: postgresql+psycopg2://user:pass@db:5432/appdb
+      # 啟用 Milvus 時取消註解（需在 requirements 加 pymilvus）：
+      # MILVUS_URI: http://milvus:19530
+    # GPU：Docker Desktop（WSL2）+ NVIDIA 驅動即可使用；沒有 NVIDIA GPU 時刪除此段
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend/attack-frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # 預設使用 backend/app.db（SQLite，保留既有帳號）；要改用 PostgreSQL：
+  #   docker compose --profile postgres up -d，並取消上方 DATABASE_URL 註解
+  db:
+    image: postgres:16
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Milvus standalone（可選，啟用：docker compose --profile milvus up -d）
+  milvus:
+    image: milvusdb/milvus:v2.4.15
+    profiles: ["milvus"]
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+
+volumes:
+  model-cache:
+  pgdata:
+  milvus-data:

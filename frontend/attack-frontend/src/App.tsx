@@ -1,0 +1,74 @@
+import { useEffect, useState } from 'react'
+import { Routes, Route, Outlet, Navigate } from 'react-router-dom'
+import NavBar from './components/NavBar'
+import LoginForm from './components/LoginForm'
+import Dashboard from './pages/Dashboard'
+import ProtectedRoute from './components/ProtectedRoute'
+import DualYoloViewer from './pages/DualYoloViewer'
+import LoadingScreen from './components/LoadingScreen'
+import VerifyEmailPage from './pages/VerifyEmailPage'
+import EventsPage from './pages/EventsPage'
+
+const AppLayout = () => (
+  <div className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-lime-100 pb-28">
+    <Outlet />
+    <NavBar />
+  </div>
+)
+
+function App() {
+  const [appLoading, setAppLoading] = useState(true)
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAppLoading(false)
+    }, 1200)
+
+    return () => clearTimeout(timer)
+  }, [])
+
+  if (appLoading) {
+    return <LoadingScreen />
+  }
+
+  return (
+    <Routes>
+      <Route element={<AppLayout />}>
+        <Route path="/login" element={<LoginForm />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
+
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/events"
+          element={
+            <ProtectedRoute>
+              <EventsPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/yolo-dual"
+          element={
+            <ProtectedRoute>
+              <DualYoloViewer />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Route>
+    </Routes>
+  )
+}
+
+export default App
