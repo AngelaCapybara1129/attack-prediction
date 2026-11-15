@@ -93,10 +93,16 @@ yarn-error.log*
 *.tflite
 *.trt
 *.task
-# 小型預訓練權重保留在版控，clone 後即可執行（共約 17 MB）
+# 只保留系統執行必需的小型權重（共約 19 MB），clone 後即可執行：
+#   yolo26n-pose.pt          人物偵測 + 骨架關鍵點（即時系統預設）
+#   yolo26n.pt               武器偵測、MediaPipe 模式的人物偵測
+#   pose_landmarker_lite.task  MediaPipe 模式（POSE_BACKEND=mediapipe）
+# 其餘（yolo26s/m/l、*-pose 大模型、pose_landmarker_full/heavy…）只用於離線實驗，
+# 缺少時 ultralytics 會自動下載官方權重，不進版控
 !backend/weights/
-!backend/weights/*.pt
-!backend/weights/*.task
+!backend/weights/yolo26n.pt
+!backend/weights/yolo26n-pose.pt
+!backend/weights/pose_landmarker_lite.task
 # 根目錄與 app/ 下的重複權重副本（程式只讀 backend/weights/）
 backend/*.pt
 backend/*.task
