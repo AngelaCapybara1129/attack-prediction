@@ -16,14 +16,33 @@ for _a, _b in _FLIP_PAIRS:
 
 
 def augment_skeleton(skel: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """skel: (C,T,V,M)。隨機水平翻轉、縮放與微小雜訊。"""
+    """skel: (C,T,V,M)。隨機水平翻轉、縮放、小角度旋轉、時間平移、雜訊；多人時隨機交換人物順序。
+
+    全為 0 的人物（缺人）與幀（缺漏）保持為 0，不加雜訊。
+    """
     out = skel.copy()
+    present = np.abs(out).sum(axis=(0, 2)) > 0            # (T, M)
     if rng.random() < 0.5:
         out = out[:, :, FLIP_PERM, :]
         out[0] = -out[0]
     out[:2] *= rng.uniform(0.9, 1.1)
+    theta = np.radians(rng.uniform(-10, 10))
+    c, s = np.cos(theta), np.sin(theta)
+    x, y = out[0].copy(), out[1].copy()
+    out[0], out[1] = c * x - s * y, s * x + c * y
     out += rng.normal(0.0, 0.01, size=out.shape).astype(np.float32)
-    return out.astype(np.float32)
+    shift = int(rng.integers(-out.shape[1] // 10, out.shape[1] // 10 + 1))
+    if shift:
+        out = np.roll(out, shift, axis=1)
+        present = np.roll(present, shift, axis=0)
+        if shift > 0:
+            present[:shift] = False
+        else:
+            present[shift:] = False
+    out *= present[None, :, None, :]
+    if out.shape[3] > 1 and rng.random() < 0.5:
+        out = out[..., ::-1]
+    return np.ascontiguousarray(out, dtype=np.float32)
 
 
 class SkeletonDataset(Dataset):

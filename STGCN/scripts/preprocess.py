@@ -291,7 +291,10 @@ def assign_split(session: Path, meta: Dict, ratios=(0.7, 0.15, 0.15)) -> str:
     # 同一來源影片切出的片段（RWF-2000：<youtube_id>_0、_1…）必須落在同一份，避免資料洩漏
     import re
     stem = Path(str(meta.get("video") or session.name)).stem
-    group = f"{meta.get('dataset') or ''}:{re.sub(r'_\d+$', '', stem)}"
+    base = re.sub(r"_\d+$", "", stem)
+    if len(base) < 6:          # 例如 V_398、fi12：不是「來源影片 ID + 片段編號」，以完整檔名分組
+        base = stem
+    group = f"{meta.get('dataset') or ''}:{base}"
     h = int(hashlib.md5(group.encode("utf-8")).hexdigest(), 16) % 1000 / 1000.0
     split = meta.get("split")
     if split == "train":
@@ -315,6 +318,9 @@ def main():
     ap.add_argument("--horizon-sec", type=float, default=config.HORIZON_SEC)
     ap.add_argument("--seq-len", type=int, default=config.SEQ_LEN)
     ap.add_argument("--stride-sec", type=float, default=config.STRIDE_SEC)
+    ap.add_argument("--max-per-session", type=int, default=30, help="每個 session 最多取幾個視窗（0 = 不限）")
+    ap.add_argument("--min-valid-ratio", type=float, default=config.MIN_VALID_RATIO,
+                    help="視窗內需有骨架的時間比例（低解析度監視器畫面可設 0.3，缺漏處以內插補齊）")
     ap.add_argument("--taxonomy", choices=sorted(ATTACK_TAXONOMY), default="coarse",
                     help="coarse：normal/fight/weapon；fine：細分 punch/kick/push/knife/gun…")
     ap.add_argument("--classes", type=str, default=None, help="指定類別清單（逗號分隔），預設依資料自動決定")
@@ -328,6 +334,7 @@ def main():
     config.HORIZON_SEC = args.horizon_sec
     config.SEQ_LEN = args.seq_len
     config.STRIDE_SEC = args.stride_sec
+    config.MIN_VALID_RATIO = args.min_valid_ratio
     config.MODEL_CONFIG.update({"window_sec": args.window_sec, "horizon_sec": args.horizon_sec, "seq_len": args.seq_len})
 
     roots = [Path(p) for p in args.sessions] if args.sessions else [config.INTERIM_SESSIONS_DIR, *config.BACKEND_SESSION_DIRS]
@@ -356,6 +363,11 @@ def main():
             meta = load_meta(session)
             split = assign_split(session, meta)
             samples = build_samples(session, args, classes, stats)
+            if args.max_per_session and len(samples) > args.max_per_session:
+                # 長影片只取均勻分布的部分視窗，避免單一影片主導資料集
+                keep = np.linspace(0, len(samples) - 1, args.max_per_session).round().astype(int)
+                stats["windows_capped"] += len(samples) - len(set(keep.tolist()))
+                samples = [samples[k] for k in sorted(set(keep.tolist()))]
             for j, s in enumerate(samples):
                 sid = f"{session.name}_p{s['pid']}_{j:05d}"
                 np.savez_compressed(

@@ -2,6 +2,8 @@
 
     python scripts/train.py                      # 雙通道多任務（預設，輸出 checkpoints/intent_model.pt）
     python scripts/train.py --task action        # 只訓練 ST-GCN 行為分類（輸出 checkpoints/best_stgcn.pth）
+    python scripts/train.py --task classify --data data/processed_clips
+                                                 # 雙通道模型只訓練攻擊類型（整段影片 × 雙人，preprocess_clips.py）
 
 損失 = CE(攻擊類型) + CE(L0–L4) + 5·MSE(下一秒 X1–X9) + 5·MSE(風險分數/10)
 攻擊類型類別清單來自 preprocess 產生的 dataset_meta.json（--taxonomy coarse/fine），並存進 checkpoint；
@@ -54,7 +56,8 @@ def masked_ce(logits, target, weight=None):
     return F.cross_entropy(logits, target, weight=weight, ignore_index=-1)
 
 
-def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=None, w_level=None):
+def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=None, w_level=None,
+              label_smoothing=0.0):
     train = optimizer is not None
     model.train(train)
     totals = {"loss": 0.0, "n": 0}
@@ -68,6 +71,10 @@ def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=Non
                 logits = model(skel)
                 loss = masked_ce(logits, y_action, w_action)
                 out = {"action_logits": logits}
+            elif task == "classify":
+                out = model(skel, batch["xseq"].to(device))
+                loss = F.cross_entropy(out["action_logits"], y_action, weight=w_action, ignore_index=-1,
+                                       label_smoothing=label_smoothing if train else 0.0)
             else:
                 xseq = batch["xseq"].to(device)
                 y_level = batch["level"].to(device)
@@ -90,7 +97,7 @@ def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=Non
         totals["n"] += bs
         ys["action"].append(batch["action"].numpy())
         ys["action_pred"].append(out["action_logits"].argmax(1).detach().cpu().numpy())
-        if task != "action":
+        if task == "intent":
             ys["level"].append(batch["level"].numpy())
             ys["level_pred"].append(out["level_logits"].argmax(1).detach().cpu().numpy())
             ys["next_x"].append(batch["next_x"].numpy())
@@ -102,7 +109,7 @@ def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=Non
     ya, pa = np.concatenate(ys["action"]), np.concatenate(ys["action_pred"])
     keep = ya >= 0
     metrics["action"] = classification_metrics(ya[keep], pa[keep], len(classes), classes)
-    if task != "action":
+    if task == "intent":
         metrics["level"] = classification_metrics(np.concatenate(ys["level"]), np.concatenate(ys["level_pred"]),
                                                   len(LEVELS), LEVELS)
         metrics["next_x"] = regression_metrics(np.concatenate(ys["next_x"]), np.concatenate(ys["next_x_pred"]))
@@ -111,14 +118,15 @@ def run_epoch(model, loader, device, task, classes, optimizer=None, w_action=Non
 
 
 def selection_score(m, task):
-    if task == "action":
+    if task in ("action", "classify"):
         return m["action"]["macro_f1"]
     return m["action"]["macro_f1"] + m["level"]["macro_f1"] - m["next_x"]["mae"] - m["risk"]["mae"] / RISK_SCALE
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["intent", "action"], default="intent")
+    ap.add_argument("--task", choices=["intent", "action", "classify"], default="intent",
+                    help="intent：攻擊類型 + 下一秒 X/風險/等級；classify：雙通道只訓練攻擊類型；action：單通道 ST-GCN")
     ap.add_argument("--data", type=str, default=str(config.PROCESSED_DIR))
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch-size", type=int, default=16)
@@ -128,6 +136,8 @@ def main():
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--dropout", type=float, default=None, help="覆寫模型 dropout（減少過擬合）")
+    ap.add_argument("--label-smoothing", type=float, default=0.0)
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -145,6 +155,12 @@ def main():
         with open(meta_path, "r", encoding="utf-8") as f:
             model_cfg.update(json.load(f).get("config", {}))   # 與資料集一致的 seq_len / window_sec / horizon_sec
 
+    if args.dropout is not None:
+        model_cfg["dropout"] = args.dropout
+    if args.task == "classify":
+        model_cfg["task"] = "classify"
+    print(f"模型設定：num_person={model_cfg.get('num_person', 1)} seq_len={model_cfg.get('seq_len')} "
+          f"dropout={model_cfg.get('dropout')} task={args.task}")
     classes = list(model_cfg.get("action_classes") or ACTION_CLASSES)
     model_cfg["action_classes"] = classes
     a_counts = train_ds.label_counts("action", len(classes))
@@ -161,7 +177,8 @@ def main():
         out_path = args.out or str(config.CHECKPOINT_DIR / "best_stgcn.pth")
     else:
         model = build_model(model_cfg).to(device)
-        out_path = args.out or str(config.CHECKPOINT_DIR / "intent_model.pt")
+        default_name = "attack_classifier.pt" if args.task == "classify" else "intent_model.pt"
+        out_path = args.out or str(config.CHECKPOINT_DIR / default_name)
     print(f"Model params: {count_parameters(model):,}")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, drop_last=len(train_ds) > args.batch_size)
@@ -176,7 +193,8 @@ def main():
         writer.writerow(["epoch", "train_loss", "val_loss", "val_action_top1", "val_action_f1",
                          "val_level_f1", "val_next_x_mae", "val_risk_mae", "lr"])
         for epoch in range(1, args.epochs + 1):
-            tr = run_epoch(model, train_loader, device, args.task, classes, optimizer, w_action, w_level)
+            tr = run_epoch(model, train_loader, device, args.task, classes, optimizer, w_action, w_level,
+                           label_smoothing=args.label_smoothing)
             va = run_epoch(model, val_loader, device, args.task, classes)
             scheduler.step()
             score = selection_score(va, args.task)

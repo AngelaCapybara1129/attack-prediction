@@ -58,12 +58,19 @@ pnpm install; pnpm dev        # http://localhost:5173
 
 ### Docker（GPU）
 
-```powershell
-docker compose up -d --build        # 前端 http://localhost:3000，後端 http://localhost:8000/docs
-docker compose logs -f backend
-docker compose down
-```
+在 `attack-prediction` 資料夾執行。啟動後前端在 http://localhost:3000，後端 API 在 http://localhost:8000/docs。
 
+| 要做的事 | 指令 |
+|---|---|
+| 啟動 | `docker compose up -d` |
+| 停止 | `docker compose down` |
+| 修改程式後重新建置 | `docker compose up -d --build` |
+| 查看後端紀錄 | `docker compose logs -f backend` |
+| 只改了 Python 程式（不重建映像） | `docker compose restart backend` |
+
+- 第一次啟動前要先建置映像（`docker compose up -d --build`），後端映像約 13 GB，第一次建置需要一段時間。
+- 後端容器直接讀取 `backend` 資料夾，但不會自動重新載入；改了 Python 程式後要 `docker compose restart backend` 才會生效。改了 `requirements.txt` 或前端程式則要 `--build` 重新建置。
+- Docker 與本機執行（`start.ps1`）都使用 port 8000，**兩者不能同時執行**：切換前先 `docker compose down` 或關掉本機的後端／前端視窗。
 - 後端映像使用 CUDA 12.6 版 PyTorch，需 Docker Desktop（WSL2）+ NVIDIA 驅動；沒有 NVIDIA GPU 時刪除 `docker-compose.yml` 中的 `deploy:` 區塊。
 - 預設沿用 `backend/app.db`（SQLite，保留既有帳號）。改用 PostgreSQL：取消 `DATABASE_URL` 註解後 `docker compose --profile postgres up -d`。
 - **Windows 版 Docker 無法讀取 USB 攝影機**。容器內請用 RTSP 或影片：把影片放到 `backend/data/videos/`，在 `backend/.env` 設 `EXTRA_SOURCES=/app/data/videos/xxx.mp4`。要用實體攝影機展示時，請改用上面的本機執行方式。

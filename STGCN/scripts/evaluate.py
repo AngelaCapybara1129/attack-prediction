@@ -32,11 +32,25 @@ from datasets.skeleton_dataset import IntentWindowDataset  # noqa: E402
 from utils.metrics import classification_metrics, per_index_regression, regression_metrics  # noqa: E402
 
 
-def session_of(split_dir: str):
+def read_labels(split_dir: str):
     out = {}
     with open(os.path.join(split_dir, "labels.csv"), "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            out[row["sample_id"].strip()] = row.get("session") or row["sample_id"]
+            out[row["sample_id"].strip()] = row
+    return out
+
+
+def rule_baseline(y_action, rule_levels, classes):
+    """規則系統（X1–X9 + AHP）基線：視窗內最高等級 ≥ L_k 視為攻擊（第一個攻擊類別）。"""
+    attack = next((i for i, c in enumerate(classes) if c not in NON_ATTACK_CLASSES), None)
+    normal = classes.index("normal") if "normal" in classes else 0
+    if attack is None:
+        return {}
+    keep = y_action >= 0
+    out = {}
+    for k in (1, 2, 3):
+        pred = np.where(rule_levels >= k, attack, normal)
+        out[f">=L{k}"] = classification_metrics(y_action[keep], pred[keep], len(classes), classes)
     return out
 
 
@@ -78,7 +92,8 @@ def main():
 
     split_dir = os.path.join(args.data, args.split)
     ds = IntentWindowDataset(split_dir)
-    sess_map = session_of(split_dir)
+    rows = read_labels(split_dir)
+    task = cfg.get("task", "intent")
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False)
     keys = ["action", "level", "next_x", "risk", "cur_x", "cur_risk", "cur_level"]
     ys = {k: [] for k in keys}
@@ -96,7 +111,8 @@ def main():
                 ys[k].append(b[k].numpy())
     y = {k: np.concatenate(v) for k, v in ys.items()}
     p = {k: np.concatenate(v) for k, v in preds.items()}
-    sessions = [sess_map.get(it["sample_id"], it["sample_id"]) for it in ds.items]
+    sessions = [rows.get(it["sample_id"], {}).get("session") or it["sample_id"] for it in ds.items]
+    rule_levels = np.array([int(rows.get(it["sample_id"], {}).get("rule_level") or -1) for it in ds.items])
     labeled = y["action"] >= 0
 
     report = {
@@ -107,6 +123,7 @@ def main():
         "action_classes": classes,
         "action": classification_metrics(y["action"][labeled], p["action"][labeled], len(classes), classes),
         "action_video": video_level(sessions, y["action"], p["action_prob"], classes, args.video_threshold),
+        "task": task,
         "level": classification_metrics(y["level"], p["level"], len(LEVELS), LEVELS),
         "next_x": {**regression_metrics(y["next_x"], p["next_x"]),
                    "per_index": per_index_regression(y["next_x"], p["next_x"], INDEX_KEYS)},
@@ -117,6 +134,13 @@ def main():
             "level": classification_metrics(y["level"], y["cur_level"], len(LEVELS), LEVELS),
         },
     }
+
+    if task == "classify":
+        # 只訓練攻擊類型：等級／下一秒指數的輸出頭未訓練，不列入報告
+        for k in ("level", "next_x", "risk", "baseline_persistence"):
+            report.pop(k, None)
+        if (rule_levels >= 0).all():
+            report["baseline_rule"] = rule_baseline(y["action"], rule_levels, classes)
 
     a, av = report["action"], report["action_video"]
     print(f"樣本數: {report['n']}（有攻擊類型標籤 {report['n_labeled']}）  類別: {classes}")
@@ -130,6 +154,14 @@ def main():
     print("    混淆矩陣（列=真值, 欄=預測）:")
     for c, row in zip(classes, a["confusion_matrix"]):
         print(f"      {c:<14}{row}")
+    if task == "classify":
+        for name, m in report.get("baseline_rule", {}).items():
+            print(f"[規則基線 {name}] Top-1={m['top1']:.4f}  Macro-F1={m['macro_f1']:.4f}  Recall={m['macro_recall']:.4f}")
+        out = args.out or str(config.LOG_DIR / f"eval_{args.split}.json")
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"完整報告 → {out}")
+        return
     print(f"[風險等級] Acc={report['level']['top1']:.4f}  Macro-F1={report['level']['macro_f1']:.4f}  "
           f"(基線 Acc={report['baseline_persistence']['level']['top1']:.4f})")
     print(f"[下一秒 X1–X9] MAE={report['next_x']['mae']:.4f}  RMSE={report['next_x']['rmse']:.4f}  "

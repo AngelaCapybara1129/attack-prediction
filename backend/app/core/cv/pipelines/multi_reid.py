@@ -7,6 +7,7 @@
   5. IntentEngine：X1–X9 → (ST-GCN + LSTM) → AHP + 表 2 規則 → L0–L4
   6. 告警：寫入事件庫、RAG 說明、WebSocket 廣播、推播
 """
+import os
 import time
 import threading
 from collections import deque
@@ -27,6 +28,7 @@ from app.core.intent.constants import LEVEL_BGR
 from app.core.intent.engine import IntentEngine
 from app.core.intent.features import PersonObservation, WeaponObservation
 from app.core.intent.predictor import get_predictor
+from app.core.intent.keypoints import pose_from_result
 from app.core.intent.skeleton import crop_landmarks_to_frame
 from app.core.paths import BACKEND_DIR, SNAPSHOT_DIR, WEIGHTS_DIR
 from app.core.utils.pose_utils import (
@@ -38,7 +40,11 @@ from app.core.utils.pose_utils import (
 )
 
 BASE_DIR = BACKEND_DIR
-MODEL_PATH = WEIGHTS_DIR / "yolo26n.pt"
+# 骨架來源：yolo（預設，YOLO26-pose 一次取得人物框與 17 點關鍵點，轉成 33 點格式）
+#          mediapipe（YOLO26 偵測後對每人裁切做 MediaPipe 33 點估計，研究計畫原始做法）
+# RWF-2000 實測可信骨架比例 85% vs 40%，見 app/core/intent/keypoints.py
+POSE_BACKEND = os.getenv("POSE_BACKEND", "yolo").strip().lower()
+MODEL_PATH = WEIGHTS_DIR / ("yolo26n-pose.pt" if POSE_BACKEND == "yolo" else "yolo26n.pt")
 TRACKER_PATH = BASE_DIR / "app" / "scripts" / "custom_tracker.yaml"
 
 CONF_DEFAULT = 0.45
@@ -400,7 +406,8 @@ def process_camera_frame(
         confs = result.boxes.conf.cpu().tolist()
 
         seen_pids = set()
-        for box, track_id, det_conf in zip(boxes, track_ids, confs):
+        has_kpts = getattr(result, "keypoints", None) is not None and result.keypoints.xy is not None
+        for det_idx, (box, track_id, det_conf) in enumerate(zip(boxes, track_ids, confs)):
             person_id, note, reid_score = resolve_person(camera_name, int(track_id), frame, box)
             if person_id is None or person_id in seen_pids:
                 x1, y1, x2, y2 = box
@@ -411,14 +418,19 @@ def process_camera_frame(
             seen_pids.add(person_id)
 
             pose_box = expand_box(box, frame.shape, scale_x=0.18, scale_y=0.22)
-            pose_crop = safe_crop(frame, pose_box)
             landmarks, visibility, lm_px = None, None, None
-            if pose_crop is not None:
-                ph, pw = pose_crop.shape[:2]
-                if ph >= MIN_POSE_CROP_H and pw >= MIN_POSE_CROP_W:
-                    landmarks, visibility = extract_mediapipe_pose_full(pose_crop)
-            if landmarks:
-                lm_px = crop_landmarks_to_frame(landmarks, pose_box)
+            if has_kpts:
+                lm_px, vis33 = pose_from_result(result, det_idx)
+                visibility = None if vis33 is None else vis33.round(3).tolist()
+            else:
+                pose_crop = safe_crop(frame, pose_box)
+                if pose_crop is not None:
+                    ph, pw = pose_crop.shape[:2]
+                    if ph >= MIN_POSE_CROP_H and pw >= MIN_POSE_CROP_W:
+                        landmarks, visibility = extract_mediapipe_pose_full(pose_crop)
+                if landmarks:
+                    lm_px = crop_landmarks_to_frame(landmarks, pose_box)
+            if lm_px is not None:
                 draw_pose_px(vis, lm_px)
 
             observations.append(PersonObservation(

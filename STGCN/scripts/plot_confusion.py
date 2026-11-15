@@ -72,13 +72,15 @@ def main():
     report = json.loads(Path(args.report).read_text(encoding="utf-8"))
     classes = report.get("action_classes") or list(report["action"]["per_class"])
     names = [f"{ACTION_NAMES.get(c, c)}\n{c}" for c in classes]
-    levels = list(report["level"]["per_class"])
 
     use_cjk_font()
     panels = [("攻擊類型（視窗層級）", report["action"], names)]
     if report.get("action_video", {}).get("n"):
         panels.append(("攻擊類型（影片層級）", report["action_video"], names))
-    panels.append(("風險等級 L0–L4", report["level"], levels))
+    if "level" in report:
+        panels.append(("風險等級 L0–L4", report["level"], list(report["level"]["per_class"])))
+    elif report.get("baseline_rule", {}).get(">=L2"):
+        panels.append(("規則基線（X1–X9 + AHP，≥ L2 判為攻擊）", report["baseline_rule"][">=L2"], names))
 
     fig, axes = plt.subplots(1, len(panels), figsize=(5.2 * len(panels), 5.2))
     for ax, (title, m, labels) in zip(np.atleast_1d(axes), panels):

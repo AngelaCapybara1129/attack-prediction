@@ -33,9 +33,12 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
 from app.core.cv.lap_compat import install as install_lap_compat  # noqa: E402
+from app.core.intent.keypoints import pose_from_result  # noqa: E402
 from app.core.intent.skeleton import crop_landmarks_to_frame, expand_box  # noqa: E402
 from app.core.paths import WEIGHTS_DIR  # noqa: E402
-from app.core.utils.pose_utils import extract_mediapipe_pose_full, pose_model_exists  # noqa: E402
+from app.core.utils.pose_utils import (  # noqa: E402
+    POSE_MIN_CONFIDENCE, POSE_UPSCALE_HEIGHT, extract_mediapipe_pose_full, pose_model_exists,
+)
 
 VIDEO_EXTS = {".avi", ".mp4", ".mkv", ".mov"}
 
@@ -73,7 +76,8 @@ def process_video(video: Path, out_dir: Path, label, split, args, weapon_detecto
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or config.DEFAULT_FRAME_SIZE[0]
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or config.DEFAULT_FRAME_SIZE[1]
 
-    model = YOLO(str(WEIGHTS_DIR / args.yolo))   # 每支影片新的 tracker 狀態
+    weights = args.yolo or ("yolo26n-pose.pt" if args.pose == "yolo" else "yolo26l.pt")
+    model = YOLO(str(WEIGHTS_DIR / weights))   # 每支影片新的 tracker 狀態
     tracker_cfg = config.BACKEND_DIR / "app" / "scripts" / "custom_tracker.yaml"
     tracker_arg = str(tracker_cfg) if tracker_cfg.exists() else "bytetrack.yaml"
 
@@ -96,20 +100,27 @@ def process_video(video: Path, out_dir: Path, label, split, args, weapon_detecto
                 weapons = [{"label": w.label, "conf": round(w.conf, 3), "bbox": list(w.bbox)}
                            for w in weapon_detector.detect(video.name, frame)]
             if res.boxes is not None and res.boxes.id is not None:
-                for box, tid, cf in zip(res.boxes.xyxy.int().cpu().tolist(), res.boxes.id.int().cpu().tolist(),
-                                        res.boxes.conf.cpu().tolist()):
+                for k, (box, tid, cf) in enumerate(zip(res.boxes.xyxy.int().cpu().tolist(),
+                                                       res.boxes.id.int().cpu().tolist(),
+                                                       res.boxes.conf.cpu().tolist())):
                     pose_box = expand_box(box, fw, fh)
-                    x1, y1, x2, y2 = pose_box
-                    crop = frame[y1:y2, x1:x2]
-                    landmarks, vis = None, None
-                    if crop.size > 0 and crop.shape[0] >= args.min_pose_h and crop.shape[1] >= args.min_pose_h // 2:
-                        landmarks, vis = extract_mediapipe_pose_full(crop)
-                    lm_px = crop_landmarks_to_frame(landmarks, pose_box).round(2).tolist() if landmarks else None
+                    landmarks, vis, lm_px = None, None, None
+                    if args.pose == "yolo":
+                        lm33, vis33 = pose_from_result(res, k)
+                        if lm33 is not None:
+                            lm_px = lm33.round(2).tolist()
+                            vis = vis33.round(3).tolist()
+                    else:
+                        x1, y1, x2, y2 = pose_box
+                        crop = frame[y1:y2, x1:x2]
+                        if crop.size > 0 and crop.shape[0] >= args.min_pose_h and crop.shape[1] >= args.min_pose_h // 2:
+                            landmarks, vis = extract_mediapipe_pose_full(crop)
+                        lm_px = crop_landmarks_to_frame(landmarks, pose_box).round(2).tolist() if landmarks else None
                     rec = {
                         "frame_idx": frame_idx, "timestamp": ts, "camera_id": "video",
                         "person_id": int(tid), "track_id": int(tid), "bbox": box,
                         "reid_score": 1.0, "det_conf": float(cf), "frame_size": [fw, fh], "pose_box": pose_box,
-                        "has_pose": landmarks is not None, "landmarks": landmarks, "landmarks_px": lm_px,
+                        "has_pose": lm_px is not None, "landmarks": landmarks, "landmarks_px": lm_px,
                         "visibility": vis, "weapons": weapons,
                     }
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -119,8 +130,9 @@ def process_video(video: Path, out_dir: Path, label, split, args, weapon_detecto
 
     meta = {
         "source": "video", "video": str(video), "dataset": dataset, "label": label, "split": split,
-        "fps": fps, "frame_size": [fw, fh], "frames": frame_idx, "records": n_records, "detector": args.yolo,
-        "every": args.every,
+        "fps": fps, "frame_size": [fw, fh], "frames": frame_idx, "records": n_records, "detector": weights, "pose_backend": args.pose,
+        "every": args.every, "min_pose_h": args.min_pose_h,
+        "pose": {"min_confidence": POSE_MIN_CONFIDENCE, "upscale_height": POSE_UPSCALE_HEIGHT},
         "created_at": time.time(),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -136,15 +148,23 @@ def main():
     ap.add_argument("--dataset", type=str, default=None, help="資料集名稱（寫進 meta.json，例如 rwf2000）")
     ap.add_argument("--shard", type=str, default="0/1", help="i/n：只處理第 i 份（多個程序平行抽取）")
     ap.add_argument("--keep-unlabeled", action="store_true", help="無法判斷標籤的影片也抽取（預設略過）")
-    ap.add_argument("--yolo", type=str, default="yolo26l.pt",
-                    help="離線抽取用較準的模型（不在 backend/weights 時會自動下載官方權重）；即時系統仍用 yolo26n")
+    ap.add_argument("--pose", choices=["yolo", "mediapipe"], default="yolo",
+                    help="骨架來源：yolo＝YOLO26-pose 多人關鍵點（預設，與即時系統相同）；mediapipe＝裁切後 MediaPipe 33 點")
+    ap.add_argument("--yolo", type=str, default=None,
+                    help="YOLO 權重（預設 --pose yolo 用 yolo26n-pose.pt，mediapipe 用 yolo26l.pt；不存在時自動下載官方權重）")
     ap.add_argument("--conf", type=float, default=0.35)
     ap.add_argument("--every", type=int, default=1, help="每 N 幀處理一次")
-    ap.add_argument("--min-pose-h", type=int, default=96)
+    ap.add_argument("--min-pose-h", type=int, default=40, help="人物裁切最小高度（小裁切會先放大到 256 px 再偵測）")
     ap.add_argument("--max-videos", type=int, default=0)
     ap.add_argument("--no-weapons", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--redo-before", type=str, default=None,
+                    help="只重做在此時間之前產生的 session（例如 '2026-11-15 01:50'），之後產生的略過；用於改設定後續跑")
     args = ap.parse_args()
+    redo_before = None
+    if args.redo_before:
+        import datetime as _dt
+        redo_before = _dt.datetime.fromisoformat(args.redo_before).timestamp()
 
     if not pose_model_exists():
         print("❌ 找不到 MediaPipe pose_landmarker 模型（backend/weights/pose_landmarker_lite.task）")
@@ -178,9 +198,17 @@ def main():
         # 名稱含上層資料夾，避免不同資料夾內同名影片互相覆蓋
         name = safe_name(f"{prefix}{split or 'all'}_{label or 'unlabeled'}_{'_'.join(rel.parts[-2:-1])}_{video.stem}")
         out_dir = out_root / name
-        if (out_dir / "meta.json").exists() and not args.overwrite:
-            print(f"[{i}/{len(videos)}] 已存在，略過 {name}")
-            continue
+        meta_path = out_dir / "meta.json"
+        if meta_path.exists() and not args.overwrite:
+            stale = False
+            if redo_before is not None:
+                try:
+                    stale = float(json.loads(meta_path.read_text(encoding="utf-8")).get("created_at", 0)) < redo_before
+                except Exception:
+                    stale = True
+            if not stale:
+                print(f"[{i}/{len(videos)}] 已存在，略過 {name}")
+                continue
         t0 = time.time()
         n = process_video(video, out_dir, label, split, args, weapon_detector, args.dataset)
         total += n

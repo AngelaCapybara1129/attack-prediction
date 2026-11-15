@@ -44,3 +44,4 @@ mediapipe==0.10.33                           # 你已經成功安裝了
 # --- 測試 ---
 pytest>=8.0
 lap>=0.5.12        # ByteTrack 依賴；Windows 被應用程式控制封鎖時自動改用 app/core/cv/lap_compat.py
+scipy>=1.11,<1.18      # torchreid 安裝時需要；lap_compat.py（Windows 的 ByteTrack 指派演算法）也用到

@@ -1,19 +1,32 @@
 ﻿# 即時顯示 RWF-2000 骨架抽取與訓練流程進度（每 5 秒更新，Ctrl+C 結束；只讀取不影響背景程序）
-# 用法：powershell -NoExit -ExecutionPolicy Bypass -File STGCN\scripts\watch_progress.ps1
+# 用法：powershell -NoExit -ExecutionPolicy Bypass -File STGCN\scripts\watch_progress.ps1            # YOLO26-pose 雙人分類流程
+#       powershell -NoExit -ExecutionPolicy Bypass -File STGCN\scripts\watch_progress.ps1 mediapipe  # 舊的 MediaPipe 逐人流程
+param([string]$Tag = "yolopose")
 $ErrorActionPreference = "SilentlyContinue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = Split-Path -Parent $PSScriptRoot
-$sessions = Join-Path $root "data\interim\sessions"
+if ($Tag -eq "mediapipe") {
+    $sessions = Join-Path $root "data\interim\sessions"
+    $shardPattern = "extract_shard*.log"
+    $pipeLog = Join-Path $root "logs\rwf2000_pipeline.log"
+} else {
+    $sessions = Join-Path $root "data\interim\sessions_$Tag"
+    $shardPattern = "extract_${Tag}_shard*.log"
+    $pipeLog = Join-Path $root "logs\rwf2000_clips_pipeline.log"
+}
 $raw = Join-Path $root "data\raw\rwf2000"
-$pipeLog = Join-Path $root "logs\rwf2000_pipeline.log"
-$host.UI.RawUI.WindowTitle = "RWF-2000 訓練進度"
+$host.UI.RawUI.WindowTitle = "RWF-2000 訓練進度（$Tag）"
 
 $total = (Get-ChildItem $raw -Recurse -File -Include *.avi, *.mp4, *.mkv, *.mov).Count
 $history = New-Object System.Collections.Generic.List[object]
 
 while ($true) {
     $dirs = Get-ChildItem $sessions -Directory -Filter "rwf2000_*"
-    $done = $dirs.Count
+    # 以抽取 log 中「[k/N] 影片 → session」行數計算進度（重新抽取時資料夾數量不變）
+    $done = 0
+    Get-ChildItem (Join-Path $root "logs") -Filter $shardPattern | ForEach-Object {
+        $done += (Select-String -Path $_.FullName -Pattern '^\[\d+/\d+\]' -Encoding UTF8).Count
+    }
     $now = Get-Date
     $history.Add([pscustomobject]@{ t = $now; n = $done })
     while ($history.Count -gt 0 -and ($now - $history[0].t).TotalSeconds -gt 300) { $history.RemoveAt(0) }

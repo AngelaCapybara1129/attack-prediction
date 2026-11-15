@@ -212,6 +212,52 @@ def normalize_skeleton_sequence(seq_px: np.ndarray, valid: Optional[np.ndarray] 
     return out.transpose(2, 0, 1)[..., None].astype(np.float32)
 
 
+def normalize_pair_sequence(seqs_px: Sequence[np.ndarray], valids: Sequence[np.ndarray]) -> np.ndarray:
+    """多人（通常 2 人）像素骨架 (T,33,3) → ST-GCN 輸入 (3,T,33,M)，保留人與人之間的相對位置。
+
+    與單人版不同：所有人共用同一個座標原點（視窗內所有人骨盆中心的平均位置，固定不隨幀移動）
+    與尺度（所有人軀幹長度中位數），因此「兩人距離、誰衝向誰、整體移動」都留在座標裡。
+    缺人或整段無骨架的位置填 0（ST-GCN 慣例）。
+    """
+    m = len(seqs_px)
+    t = np.asarray(seqs_px[0]).shape[0]
+    filled, oks = [], []
+    for seq, valid in zip(seqs_px, valids):
+        seq = np.asarray(seq, dtype=np.float32)
+        valid = np.asarray(valid, dtype=bool)
+        if valid.any():
+            filled.append(fill_missing(seq, valid))
+            oks.append(valid)
+        else:
+            filled.append(None)
+            oks.append(valid)
+    present = [i for i in range(m) if filled[i] is not None]
+    out = np.zeros((3, t, NUM_JOINTS, m), dtype=np.float32)
+    if not present:
+        return out
+
+    hips, torsos = [], []
+    for i in present:
+        s = filled[i]
+        hip = (s[:, L_HIP, :2] + s[:, R_HIP, :2]) / 2.0
+        sh = (s[:, L_SHOULDER, :2] + s[:, R_SHOULDER, :2]) / 2.0
+        hips.append(hip[oks[i]])
+        torsos.append(np.linalg.norm(sh - hip, axis=1)[oks[i]])
+    origin = np.concatenate(hips).mean(axis=0)
+    tv = np.concatenate(torsos)
+    scale = float(np.median(tv)) if tv.size else 1.0
+    if not np.isfinite(scale) or scale < 1e-3:
+        scale = 1.0
+
+    for i in present:
+        s = filled[i]
+        o = np.empty_like(s)
+        o[:, :, :2] = (s[:, :, :2] - origin[None, None, :]) / scale
+        o[:, :, 2] = s[:, :, 2] / scale
+        out[..., i] = np.clip(o, -10.0, 10.0).transpose(2, 0, 1)
+    return out
+
+
 def torso_length(lm_px: np.ndarray) -> float:
     hip = (lm_px[L_HIP, :2] + lm_px[R_HIP, :2]) / 2.0
     sh = (lm_px[L_SHOULDER, :2] + lm_px[R_SHOULDER, :2]) / 2.0

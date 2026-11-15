@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from typing import List, Optional
@@ -32,6 +33,12 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 
 _pose_estimator = None
 _pose_lock = threading.Lock()
+
+# 低解析度監視器畫面（RWF-2000 實測，327 個人物裁切）：
+#   原設定 conf 0.5、不放大 → 偵測率 24%；conf 0.3 + 裁切放大到 256 px 高 → 57%（full/heavy 模型沒有更好）
+# MediaPipe 輸出的是裁切內的正規化座標，放大不影響座標換算。
+POSE_MIN_CONFIDENCE = float(os.getenv("POSE_MIN_CONFIDENCE", "0.3"))
+POSE_UPSCALE_HEIGHT = int(os.getenv("POSE_UPSCALE_HEIGHT", "256"))
 
 POSE_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 7),
@@ -75,9 +82,9 @@ def get_pose_estimator():
                     base_options=BaseOptions(model_asset_buffer=model_bytes),
                     running_mode=VisionRunningMode.IMAGE,
                     num_poses=1,
-                    min_pose_detection_confidence=0.5,
-                    min_pose_presence_confidence=0.5,
-                    min_tracking_confidence=0.5,
+                    min_pose_detection_confidence=POSE_MIN_CONFIDENCE,
+                    min_pose_presence_confidence=POSE_MIN_CONFIDENCE,
+                    min_tracking_confidence=POSE_MIN_CONFIDENCE,
                     output_segmentation_masks=False,
                 )
                 _pose_estimator = PoseLandmarker.create_from_options(options)
@@ -98,6 +105,10 @@ def extract_mediapipe_pose_full(person_crop: Optional[np.ndarray]):
         return None, None
 
     try:
+        h = person_crop.shape[0]
+        if POSE_UPSCALE_HEIGHT and 0 < h < POSE_UPSCALE_HEIGHT:
+            s = POSE_UPSCALE_HEIGHT / h
+            person_crop = cv2.resize(person_crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
         image_rgb = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(image_rgb))
         with _pose_lock:
